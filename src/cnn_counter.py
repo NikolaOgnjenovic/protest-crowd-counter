@@ -13,25 +13,35 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
-# -----------------------------
-# Dataset with optional tiling
-# -----------------------------
 class DroneCrowdDataset(Dataset):
+    """
+    Dataset for DroneCrowd counting.
+    Reads image sequences, splits images into tiles, and generates density maps from annotations.
+    """
+
     def __init__(self, base_path, list_file, tile_size=(512, 512), transform=None):
+        """
+        Args:
+            base_path (str): root folder of dataset
+            list_file (str): file containing sequence names to load
+            tile_size (tuple): (height, width) of tiles to crop from original images
+            transform (callable): torchvision transforms to apply to image tiles
+        """
         self.tile_size = tile_size
         self.transform = transform
-        self.tiles = []  # list of (seq, frame_id_str, image_path, x0, y0)
-        # annotations: dict keyed by (seq, frame_id_str) -> list of (x, y)
-        self.annotations = {}
+        self.tiles = []  # list of (sequence, frame_id, image_path, x0, y0)
+        self.annotations = {}  # dict keyed by (seq, frame_id) -> list of (x, y)
 
+        # Read sequence names
         with open(list_file, "r") as f:
             sequences = [line.strip() for line in f if line.strip()]
 
+        # Load annotations and prepare tile references
         for seq in sequences:
             seq_folder = os.path.join(base_path, "sequences", seq)
             ann_file = os.path.join(base_path, "annotations", f"{seq}.txt")
 
-            # parse annotation file: each line: frame_id,x,y
+            # Parse annotation file: each line is frame_id,x,y
             with open(ann_file, "r") as fa:
                 for line in fa:
                     parts = line.strip().split(",")
@@ -41,10 +51,10 @@ class DroneCrowdDataset(Dataset):
                     key = (seq, frame_id_str.zfill(5))
                     self.annotations.setdefault(key, []).append((int(x), int(y)))
 
-            # list images and create tiles
+            # List images and create tiles
             for img_file in sorted(os.listdir(seq_folder)):
                 if img_file.lower().endswith((".jpg", ".png", ".jpeg")):
-                    frame_id_str = os.path.splitext(img_file)[0]  # e.g., 00029
+                    frame_id_str = os.path.splitext(img_file)[0]
                     img_path = os.path.join(seq_folder, img_file)
                     img = cv2.imread(img_path)
                     if img is None:
@@ -58,10 +68,14 @@ class DroneCrowdDataset(Dataset):
         return len(self.tiles)
 
     def __getitem__(self, idx):
+        """
+        Returns a tile of the image and its corresponding density map.
+        """
         seq, frame_id_str, img_path, x0, y0 = self.tiles[idx]
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # Crop and resize the tile
         tile_h, tile_w = self.tile_size
         img_tile = img[y0:y0 + tile_h, x0:x0 + tile_w]
         if img_tile.size == 0:
@@ -70,15 +84,11 @@ class DroneCrowdDataset(Dataset):
         else:
             img_tile = cv2.resize(img_tile, (tile_w, tile_h))
 
+        # Generate density map
         density_map = np.zeros((tile_h, tile_w), dtype=np.float32)
         key = (seq, frame_id_str)
-
-        # place point annotations as Gaussians within the tile
         if key in self.annotations:
-            # original image tile size before resize
-            # compute scale from original cropped tile (width w_crop, height h_crop) to (tile_w, tile_h)
-            # since we resized the cropped region to tile_size; it's scale is approx tile_w/w_crop, tile_h/h_crop
-            # for simplicity, convert points relative to tile crop and then to resized grid
+            # compute scaling from original crop to tile size
             w_crop = min(tile_w, img.shape[1] - x0)
             h_crop = min(tile_h, img.shape[0] - y0)
             sx = tile_w / max(1, w_crop)
@@ -94,14 +104,46 @@ class DroneCrowdDataset(Dataset):
         if self.transform:
             img_tile = self.transform(img_tile)
 
+        # return image and density map as tensor
         return img_tile, torch.from_numpy(density_map[None, :, :])
 
 
-# -----------------------------
-# CSRNet Model
-# -----------------------------
-# Backward-compat wrapper for GUI import
+class CSRNet(nn.Module):
+    """
+    CSRNet architecture for crowd counting.
+    Frontend: VGG16 features
+    Backend: dilated convolutions for density map regression
+    """
+
+    def __init__(self, load_weights=True, target_size=(512, 512)):
+        super().__init__()
+        self.target_size = target_size
+        vgg = models.vgg16(weights=models.VGG16_Weights.DEFAULT if load_weights else None)
+        self.frontend = nn.Sequential(*list(vgg.features.children())[:30])
+
+        self.backend = nn.Sequential(
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(512, 256, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(256, 128, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 64, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
+            nn.Conv2d(64, 1, 1)
+        )
+
+    def forward(self, x):
+        x = self.frontend(x)
+        x = self.backend(x)
+        # resize output to match target size
+        x = F.interpolate(x, size=self.target_size, mode='bilinear', align_corners=False)
+        return x
+
+
 class CNNCounter(nn.Module):
+    """
+    Wrapper for CSRNet to provide a consistent interface for GUI/training code
+    """
+
     def __init__(self, load_weights=True, target_size=(512, 512)):
         super().__init__()
         self.core = CSRNet(load_weights=load_weights, target_size=target_size)
@@ -110,57 +152,32 @@ class CNNCounter(nn.Module):
         return self.core(x)
 
 
-class CSRNet(nn.Module):
-    def __init__(self, load_weights=True, target_size=(512, 512)):
-        super().__init__()
-        self.target_size = target_size
-        vgg = models.vgg16(weights=models.VGG16_Weights.DEFAULT if load_weights else None)
-        self.frontend = nn.Sequential(*list(vgg.features.children())[:30])
-
-        self.backend = nn.Sequential(
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 256, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, 3, padding=2, dilation=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, 1)
-        )
-
-    def forward(self, x):
-        x = self.frontend(x)
-        x = self.backend(x)
-        x = F.interpolate(x, size=self.target_size, mode='bilinear', align_corners=False)
-        return x
-
-
-# -----------------------------
-# Training with logging & dynamic GPU usage
-# -----------------------------
 def train_csrnet(base_path, list_file, tile_size=(512, 512), batch_size=8, epochs=20, lr=1e-5):
-    torch.backends.cudnn.benchmark = True  # optimize kernels
+    """
+    Train CSRNet on DroneCrowd tiles.
+    """
+    torch.backends.cudnn.benchmark = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Define transforms for input images
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
     ])
 
+    # Dataset and loader
     dataset = DroneCrowdDataset(base_path, list_file, tile_size, transform)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                         num_workers=8, pin_memory=True, prefetch_factor=4)
 
+    # Model, optimizer, loss, scaler
     model = CSRNet(load_weights=True, target_size=tile_size).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     scaler = GradScaler(device='cuda')
 
+    # Training loop
     for epoch in range(epochs):
         model.train()
         running_loss = 0
@@ -180,7 +197,6 @@ def train_csrnet(base_path, list_file, tile_size=(512, 512), batch_size=8, epoch
 
             running_loss += loss.item()
             batch_time = time.time() - batch_start
-
             loader_iter.set_postfix(loss=f"{loss.item():.4f}",
                                     batch_time=f"{batch_time:.1f}s",
                                     gpu_mem=f"{torch.cuda.memory_reserved() / 1024 ** 3:.1f}GB")
@@ -194,15 +210,24 @@ def train_csrnet(base_path, list_file, tile_size=(512, 512), batch_size=8, epoch
     return model
 
 
-# -----------------------------
-# Prediction
-# -----------------------------
 def predict_count(model, image_path, tile_size=(512, 512), return_density_map=False):
+    """
+    Predict crowd count in an image using a trained CSRNet model.
+    Args:
+        model: trained CSRNet
+        image_path: path to image
+        tile_size: tile size used for processing
+        return_density_map: whether to return full density map
+    Returns:
+        count (float), optional density map
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
     ])
+
     img = cv2.imread(image_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     h, w = img.shape[:2]
@@ -210,6 +235,7 @@ def predict_count(model, image_path, tile_size=(512, 512), return_density_map=Fa
     count = 0.0
     density_map_full = np.zeros((h, w), dtype=np.float32)
 
+    # Process image in tiles
     for y0 in range(0, h, tile_size[1]):
         for x0 in range(0, w, tile_size[0]):
             tile = img[y0:y0 + tile_size[1], x0:x0 + tile_size[0]]
@@ -221,11 +247,8 @@ def predict_count(model, image_path, tile_size=(512, 512), return_density_map=Fa
             model.eval()
             with torch.no_grad():
                 density_tile = model(tile_tensor)
-                # enforce non-negative density
-                density_tile = torch.relu(density_tile)
-                density_tile = density_tile.squeeze().cpu().numpy()
+                density_tile = torch.relu(density_tile).squeeze().cpu().numpy()
                 density_tile = np.clip(density_tile, 0, None)
-                # resize back to the original tile
                 density_tile_resized = cv2.resize(density_tile, (tile.shape[1], tile.shape[0]))
                 density_map_full[y0:y0 + tile.shape[0], x0:x0 + tile.shape[1]] = density_tile_resized
                 count += float(density_tile_resized.sum())
@@ -236,23 +259,20 @@ def predict_count(model, image_path, tile_size=(512, 512), return_density_map=Fa
         return count
 
 
-# -----------------------------
-# Main
-# -----------------------------
 if __name__ == "__main__":
     base_path = "../data/VisDrone2020-CC"
     train_list = os.path.join(base_path, "trainlist.txt")
 
-    # Train
+    # Train the model
     model = train_csrnet(base_path, train_list, tile_size=(512, 512), batch_size=16, epochs=20, lr=1e-5)
 
-    # Test
+    # Test on a sample image
     test_seq = "00011"
     test_img = os.path.join(base_path, "sequences", test_seq, "00001.jpg")
-    count, density_map = predict_count(model, test_img)
+    count, density_map = predict_count(model, test_img, return_density_map=True)
     print(f"Predicted count: {count:.1f}")
 
-    # Visualize
+    # Visualize density map
     plt.imshow(density_map, cmap='jet')
     plt.colorbar()
     plt.show()
