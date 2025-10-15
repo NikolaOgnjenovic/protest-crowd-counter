@@ -41,7 +41,7 @@ class DroneCrowdDataset(Dataset):
                     key = (seq, frame_id_str.zfill(5))
                     self.annotations.setdefault(key, []).append((int(x), int(y)))
 
-            # enumerate images and create tiles
+            # list images and create tiles
             for img_file in sorted(os.listdir(seq_folder)):
                 if img_file.lower().endswith((".jpg", ".png", ".jpeg")):
                     frame_id_str = os.path.splitext(img_file)[0]  # e.g., 00029
@@ -77,7 +77,7 @@ class DroneCrowdDataset(Dataset):
         if key in self.annotations:
             # original image tile size before resize
             # compute scale from original cropped tile (width w_crop, height h_crop) to (tile_w, tile_h)
-            # since we resized cropped region to tile_size, scale is approx tile_w/w_crop, tile_h/h_crop
+            # since we resized the cropped region to tile_size; it's scale is approx tile_w/w_crop, tile_h/h_crop
             # for simplicity, convert points relative to tile crop and then to resized grid
             w_crop = min(tile_w, img.shape[1] - x0)
             h_crop = min(tile_h, img.shape[0] - y0)
@@ -225,7 +225,7 @@ def predict_count(model, image_path, tile_size=(512, 512), return_density_map=Fa
                 density_tile = torch.relu(density_tile)
                 density_tile = density_tile.squeeze().cpu().numpy()
                 density_tile = np.clip(density_tile, 0, None)
-                # resize back to original tile
+                # resize back to the original tile
                 density_tile_resized = cv2.resize(density_tile, (tile.shape[1], tile.shape[0]))
                 density_map_full[y0:y0 + tile.shape[0], x0:x0 + tile.shape[1]] = density_tile_resized
                 count += float(density_tile_resized.sum())
@@ -242,7 +242,6 @@ def predict_count(model, image_path, tile_size=(512, 512), return_density_map=Fa
 if __name__ == "__main__":
     base_path = "../data/VisDrone2020-CC"
     train_list = os.path.join(base_path, "trainlist.txt")
-    test_list = os.path.join(base_path, "testlist.txt")
 
     # Train
     model = train_csrnet(base_path, train_list, tile_size=(512, 512), batch_size=16, epochs=20, lr=1e-5)

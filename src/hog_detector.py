@@ -41,7 +41,7 @@ def main():
             print(f"Warning: {img_path} not found, skipping...")
             continue
         print(f"\nTesting HOG on {scenario} scenario: {img_path}")
-        run_hog(img_path, f"../data/{scenario}_hog.jpg")
+        run_hog(img_path, f"../data/output/{scenario}_hog.jpg")
 
 
 if __name__ == "__main__":

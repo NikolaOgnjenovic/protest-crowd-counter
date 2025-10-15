@@ -44,7 +44,7 @@ def main():
             haar_xml = "haarcascade_fullbody.xml"
 
         print(f"\nTesting Haar on {scenario} scenario: {img_path}")
-        run_haar(img_path, f"../data/{scenario}_haar.jpg", haar_xml=haar_xml)
+        run_haar(img_path, f"../data/output/{scenario}_haar.jpg", haar_xml=haar_xml)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 .venv/
-data/
 data/VisDrone2020-CC/
+data/output/
 .idea/
 src/__pycache__/
 __pycache__/
