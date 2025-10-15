@@ -74,6 +74,13 @@ class App:
             print("No fine-tuned density weights found. Using default model weights.")
         self.cnn_model.eval()
 
+        self.cnn_trained = loaded
+        if not self.cnn_trained:
+            messagebox.showwarning(
+                "CNN Warning",
+                "No pretrained CNN weights found. Predictions will be untrained and meaningless."
+            )
+
         self.img_path = None  # Path of the loaded image
         self.img = None  # Tkinter PhotoImage
 
@@ -131,6 +138,14 @@ class App:
 
     def cnn_predict(self):
         """Run CNN density prediction on the loaded image and overlay the density map."""
+
+        if not self.cnn_trained:
+            messagebox.showwarning(
+                "CNN Warning",
+                "CNN model is not trained. Cannot perform prediction."
+            )
+            return
+
         if self.img_path:
             count, density_map = predict_count(self.cnn_model, self.img_path, return_density_map=True)
             img = cv2.imread(self.img_path)
