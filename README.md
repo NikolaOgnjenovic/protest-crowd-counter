@@ -56,7 +56,7 @@ VisDrone2020-CC/
 
 ```bash
 cd src
-python -c "from cnn_counter import train_csrnet; model=train_csrnet('VisDrone2020-CC','VisDrone2020-CC/trainlist.txt', tile_size=(512,512), batch_size=8, epochs=20, lr=1e-5)"
+python -c "from cnn_counter import train_csrnet; model=train_csrnet('../data/VisDrone2020-CC','../data/VisDrone2020-CC/trainlist.txt', tile_size=(512,512), batch_size=8, epochs=1, lr=1e-5)"
 ```
 
 ## GUI

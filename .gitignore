@@ -4,3 +4,4 @@ data/output/
 .idea/
 src/__pycache__/
 __pycache__/
+data/csrnet_drone_tiles.pth
